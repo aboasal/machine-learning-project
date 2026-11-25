@@ -3,9 +3,15 @@ from pathlib import Path
 import sys
 
 import cv2
+import joblib
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
@@ -25,6 +31,8 @@ C_VALUES = [0.01, 0.1, 1.0, 10.0, 100.0]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FLOWERS_DIR = PROJECT_ROOT / "flowers"
 SPLITS_PATH = Path(__file__).resolve().parent / "flowers_splits.npz"
+MODELS_DIR = PROJECT_ROOT / "models"
+CONFUSION_MATRIX_PATH = Path(__file__).resolve().parent / "logreg_confusion_matrix.png"
 
 
 def load_and_inspect_dataset(
@@ -228,15 +236,159 @@ def tune_logistic_regression(
     return best_model, best_c, best_val_acc, results
 
 
+def evaluate_on_test(
+    best_model: LogisticRegression,
+    best_c: float,
+    X_test_scaled: np.ndarray,
+    y_test: np.ndarray,
+    classes: np.ndarray,
+    cm_path: Path = CONFUSION_MATRIX_PATH,
+) -> dict:
+    y_pred = best_model.predict(X_test_scaled)
+    test_acc = float(accuracy_score(y_test, y_pred))
+    class_labels = [str(c) for c in classes]
+    report_text = classification_report(
+        y_test, y_pred, target_names=class_labels, digits=4
+    )
+    cm = confusion_matrix(y_test, y_pred)
+
+    cm_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(7, 5.5))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=class_labels,
+        yticklabels=class_labels,
+        ax=ax,
+    )
+    ax.set_title(
+        f"Logistic Regression Confusion Matrix (C={best_c}, Test Acc={test_acc:.4f})"
+    )
+    ax.set_xlabel("Predicted Label")
+    ax.set_ylabel("True Label")
+    fig.tight_layout()
+    fig.savefig(cm_path, dpi=150)
+    plt.close(fig)
+
+    top_confusions: list[tuple[int, str, str, float]] = []
+    for i, true_name in enumerate(class_labels):
+        row_total = int(cm[i].sum())
+        for j, pred_name in enumerate(class_labels):
+            if i != j and cm[i, j] > 0:
+                pct = float(cm[i, j]) / float(row_total) * 100.0 if row_total > 0 else 0.0
+                top_confusions.append((int(cm[i, j]), true_name, pred_name, pct))
+    top_confusions.sort(key=lambda item: item[0], reverse=True)
+
+    print("\n=== Final Test Set Evaluation (Single Evaluation) ===")
+    print(f"Selected Model : LogisticRegression(C={best_c}, max_iter=1000, random_state={RANDOM_STATE})")
+    print(f"Test Accuracy  : {test_acc:.4f} ({test_acc * 100:.2f}%)")
+    print("\nClassification Report (Test Set):")
+    print(report_text)
+    print(f"Saved confusion matrix heatmap: {cm_path}")
+    print("Top Confused Class Pairs (True -> Predicted):")
+    for count, true_name, pred_name, pct in top_confusions[:8]:
+        print(f"  - {true_name:<10s} -> {pred_name:<10s}: {count:2d} ({pct:5.1f}% of true {true_name})")
+
+    return {
+        "test_acc": test_acc,
+        "report_text": report_text,
+        "cm": cm,
+        "top_confusions": top_confusions,
+        "cm_path": cm_path,
+    }
+
+
+def export_artifacts(
+    best_model: LogisticRegression,
+    scaler: StandardScaler,
+    classes: np.ndarray,
+    models_dir: Path = MODELS_DIR,
+) -> dict[str, Path]:
+    models_dir.mkdir(parents=True, exist_ok=True)
+    model_path = models_dir / "image_logreg.joblib"
+    scaler_path = models_dir / "image_scaler.joblib"
+    classes_path = models_dir / "image_classes.joblib"
+
+    joblib.dump(best_model, model_path)
+    joblib.dump(scaler, scaler_path)
+    joblib.dump([str(c) for c in classes], classes_path)
+
+    exported = {
+        "model": model_path,
+        "scaler": scaler_path,
+        "classes": classes_path,
+    }
+    print("\n=== Exported Model Artifacts (joblib) ===")
+    for label, path in exported.items():
+        size_kb = path.stat().st_size / 1024.0
+        print(f"  - {label:<7s}: {path} ({size_kb:.2f} KB)")
+    return exported
+
+
+def print_report_summary(
+    stats: dict,
+    splits: dict[str, np.ndarray],
+    best_c: float,
+    best_val_acc: float,
+    tuning_results: list[dict],
+    eval_results: dict,
+    exported_paths: dict[str, Path],
+) -> None:
+    print("\n=== Part B Report-Ready Summary ===")
+    print(
+        f"Dataset      : Flowers Recognition ({stats['total_valid']} valid images, "
+        f"{stats['skipped_count']} skipped)"
+    )
+    print(
+        f"Image sizes  : original min={stats['min_hw']}, max={stats['max_hw']}, "
+        f"median={stats['median_hw']} -> resized={stats['resized_size']}"
+    )
+    print(
+        f"Splits       : train={len(splits['y_train'])}, val={len(splits['y_val'])}, "
+        f"test={len(splits['y_test'])} (stratified, random_state={RANDOM_STATE})"
+    )
+    print(
+        f"Features     : {BINS}-bin L1-normalized HSV histograms -> {FEATURE_DIM}-dim vector "
+        f"+ StandardScaler (fit on train only)"
+    )
+    tuning_str = ", ".join(f"C={r['C']}:{r['val_acc']:.4f}" for r in tuning_results)
+    print(f"Val tuning   : [{tuning_str}] -> best C={best_c} (val_acc={best_val_acc:.4f})")
+    print(f"Test result  : accuracy={eval_results['test_acc']:.4f} ({eval_results['test_acc'] * 100:.2f}%)")
+    print("Top 5 errors : " + ", ".join(
+        f"{t}->{p} ({n})" for n, t, p, _ in eval_results["top_confusions"][:5]
+    ))
+    print(f"Plot saved   : {eval_results['cm_path']}")
+    print("Joblib files : " + ", ".join(str(p) for p in exported_paths.values()))
+
+
 def main() -> None:
-    X, y, classes, _ = load_and_inspect_dataset()
-    splits, _ = split_and_scale(X, y, classes)
+    X, y, classes, stats = load_and_inspect_dataset()
+    splits, scaler = split_and_scale(X, y, classes)
     save_splits(splits)
-    tune_logistic_regression(
+    best_model, best_c, best_val_acc, tuning_results = tune_logistic_regression(
         splits["X_train_scaled"],
         splits["y_train"],
         splits["X_val_scaled"],
         splits["y_val"],
+    )
+    eval_results = evaluate_on_test(
+        best_model,
+        best_c,
+        splits["X_test_scaled"],
+        splits["y_test"],
+        classes,
+    )
+    exported_paths = export_artifacts(best_model, scaler, classes)
+    print_report_summary(
+        stats,
+        splits,
+        best_c,
+        best_val_acc,
+        tuning_results,
+        eval_results,
+        exported_paths,
     )
 
 
