@@ -1,0 +1,26 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python cache & build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw datasets & archives (never commit large raw files)
+flowers/
+data/raw/
+*.zip
+
+# Local agent spec
+PROJECT_SPEC.md
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
