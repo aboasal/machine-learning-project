@@ -1,17 +1,17 @@
-"""Part B (Images): Dataset inspection, HSV feature extraction, stratified splitting, and scaling."""
-
 from collections import Counter
 from pathlib import Path
 import sys
 
 import cv2
 import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-try:
+if __package__:
     from .image_features import FEATURE_DIM, extract_flower_features
-except ImportError:
+else:
     _PART_B_DIR = Path(__file__).resolve().parent
     if str(_PART_B_DIR) not in sys.path:
         sys.path.insert(0, str(_PART_B_DIR))
@@ -20,6 +20,7 @@ except ImportError:
 RANDOM_STATE = 42
 IMG_SIZE = (128, 128)
 BINS = 32
+C_VALUES = [0.01, 0.1, 1.0, 10.0, 100.0]
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FLOWERS_DIR = PROJECT_ROOT / "flowers"
@@ -31,7 +32,6 @@ def load_and_inspect_dataset(
     img_size: tuple[int, int] = IMG_SIZE,
     bins: int = BINS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-    """Load raw flower images, inspect dimensions, and extract HSV features."""
     if not flowers_dir.is_dir():
         raise FileNotFoundError(
             f"Raw flowers dataset directory not found: {flowers_dir}"
@@ -127,7 +127,6 @@ def split_and_scale(
     classes: np.ndarray,
     random_state: int = RANDOM_STATE,
 ) -> tuple[dict[str, np.ndarray], StandardScaler]:
-    """Perform stratified 70/15/15 split and fit StandardScaler on train only."""
     X_train_raw, X_temp, y_train, y_temp = train_test_split(
         X, y, test_size=0.30, stratify=y, random_state=random_state
     )
@@ -135,7 +134,6 @@ def split_and_scale(
         X_temp, y_temp, test_size=0.50, stratify=y_temp, random_state=random_state
     )
 
-    # Fit scaler strictly on training features to prevent validation/test leakage
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train_raw)
     X_val_scaled = scaler.transform(X_val_raw)
@@ -185,7 +183,6 @@ def save_splits(
     splits: dict[str, np.ndarray],
     output_path: Path = SPLITS_PATH,
 ) -> Path:
-    """Export exact train/val/test arrays for teammate handoff."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output_path, **splits)
     size_mb = output_path.stat().st_size / (1024 * 1024)
@@ -193,11 +190,54 @@ def save_splits(
     return output_path
 
 
+def tune_logistic_regression(
+    X_train_scaled: np.ndarray,
+    y_train: np.ndarray,
+    X_val_scaled: np.ndarray,
+    y_val: np.ndarray,
+    c_values: list[float] = C_VALUES,
+    random_state: int = RANDOM_STATE,
+) -> tuple[LogisticRegression, float, float, list[dict]]:
+    results: list[dict] = []
+    best_model = None
+    best_c = None
+    best_val_acc = -1.0
+
+    for c in c_values:
+        model = LogisticRegression(C=c, max_iter=1000, random_state=random_state)
+        model.fit(X_train_scaled, y_train)
+        train_acc = float(accuracy_score(y_train, model.predict(X_train_scaled)))
+        val_acc = float(accuracy_score(y_val, model.predict(X_val_scaled)))
+        results.append({"C": c, "train_acc": train_acc, "val_acc": val_acc})
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_c = c
+            best_model = model
+
+    print("\n=== Logistic Regression Validation Tuning ===")
+    print(f"{'C':>8s} | {'Train Acc':>10s} | {'Val Acc':>10s} | Selected")
+    print("-" * 46)
+    for row in results:
+        marker = "  <-- best" if row["C"] == best_c else ""
+        print(
+            f"{row['C']:8.2f} | {row['train_acc']:10.4f} | "
+            f"{row['val_acc']:10.4f} |{marker}"
+        )
+    print(f"Best C: {best_c} | Best Validation Accuracy: {best_val_acc:.4f}")
+
+    return best_model, best_c, best_val_acc, results
+
+
 def main() -> None:
-    """Run Milestone 1: dataset inspection, HSV feature extraction, and splits export."""
     X, y, classes, _ = load_and_inspect_dataset()
     splits, _ = split_and_scale(X, y, classes)
     save_splits(splits)
+    tune_logistic_regression(
+        splits["X_train_scaled"],
+        splits["y_train"],
+        splits["X_val_scaled"],
+        splits["y_val"],
+    )
 
 
 if __name__ == "__main__":

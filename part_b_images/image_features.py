@@ -1,5 +1,3 @@
-"""Reusable HSV color histogram feature extraction for Part B (Images) and Part D GUI."""
-
 from pathlib import Path
 from typing import Union
 
@@ -15,7 +13,6 @@ def _prepare_three_channel_image(
     image_input: Union[str, Path, np.ndarray],
     is_rgb: bool,
 ) -> tuple[np.ndarray, int]:
-    """Load/validate an image and return a 3-channel uint8 array plus cvtColor code."""
     if isinstance(image_input, (str, Path)):
         img = cv2.imread(str(image_input))
         if img is None:
@@ -32,7 +29,6 @@ def _prepare_three_channel_image(
 
     img = image_input
     if np.issubdtype(img.dtype, np.floating):
-        # Match uint8 OpenCV HSV ranges (H in [0, 179], S/V in [0, 255])
         max_val = float(np.max(img))
         if max_val <= 1.0:
             img = np.clip(img * 255.0, 0.0, 255.0).round().astype(np.uint8)
@@ -65,35 +61,13 @@ def extract_flower_features(
     bins: int = DEFAULT_BINS,
     is_rgb: bool = False,
 ) -> np.ndarray:
-    """Extract a normalized 1D HSV color histogram feature vector.
-
-    Parameters
-    ----------
-    image_input : str | Path | np.ndarray
-        Image file path (read as BGR by OpenCV) or an in-memory image array.
-    img_size : tuple[int, int], default=(128, 128)
-        Target `(width, height)` passed to `cv2.resize`.
-    bins : int, default=32
-        Number of histogram bins per HSV channel (output size is `3 * bins`).
-    is_rgb : bool, default=False
-        Set `True` when passing an RGB/RGBA `np.ndarray` (e.g., from PIL or
-        Streamlit `file_uploader`); ignored when `image_input` is a file path.
-
-    Returns
-    -------
-    np.ndarray
-        1D `float32` feature vector of shape `(3 * bins,)` — `(96,)` by default.
-    """
     img, cvt_code = _prepare_three_channel_image(image_input, is_rgb=is_rgb)
 
-    # Step 1: Resize to fixed dimensions (128, 128)
     resized = cv2.resize(img, img_size, interpolation=cv2.INTER_AREA)
 
-    # Step 2: Convert to HSV and scale pixel values to float32 in [0.0, 1.0]
     hsv = cv2.cvtColor(resized, cvt_code)
     hsv_norm = hsv.astype(np.float32) / 255.0
 
-    # Steps 3 & 4: Compute and L1-normalize a 32-bin histogram per HSV channel
     channel_hists = []
     for channel_idx in range(3):
         hist, _ = np.histogram(
@@ -105,5 +79,4 @@ def extract_flower_features(
         hist = hist / (hist.sum() + 1e-7)
         channel_hists.append(hist)
 
-    # Step 5: Concatenate H, S, V histograms into a single (96,) vector
     return np.concatenate(channel_hists).astype(np.float32)
